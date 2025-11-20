@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="ur">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Pac-Man Auto Move with Screens</title>
+<style>
+:root{
+  --bg:#000;
+  --wall:#00204a;
+  --pellet:#ffd54f;
+  --pac:#ffea00;
+  --ghost1:#ff4d4d;
+  --ghost2:#4dd0ff;
+  --ghost3:#ff77b3;
+  --text:#ffffff;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  background: radial-gradient(circle at 20% 10%, #001022, #000);
+  color:var(--text);
+  font-family: Inter, system-ui, Arial, sans-serif;
+  padding:18px;
+  flex-direction:column;
+}
+#ui{
+  width:704px;
+  margin-bottom:10px;
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  gap:8px;
+  font-size:16px;
+}
+#status{flex:1;text-align:center;color:var(--pellet)}
+#controls{font-size:13px;color:#aaa;text-align:right}
+canvas{
+  background: #000;
+  image-rendering: pixelated;
+  border: 4px solid rgba(255,255,255,0.04);
+  border-radius:10px;
+  box-shadow: 0 8px 36px rgba(0,0,0,0.7);
+}
+#hint{margin-top:8px;color:#bfbfbf;font-size:13px}
+
+/* Overlay screens */
+.overlay{
+  position:fixed;
+  inset:0;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  flex-direction:column;
+  font-size:32px;
+  text-shadow:0 0 15px #ff0;
+  z-index:10;
+  visibility:hidden;
+  opacity:0;
+  transition:opacity 0.6s ease;
+}
+.overlay.visible{
+  visibility:visible;
+  opacity:1;
+}
+.overlay button{
+  margin-top:20px;
+  background:#ffea00;
+  color:#000;
+  font-weight:bold;
+  padding:10px 28px;
+  border:none;
+  border-radius:8px;
+  cursor:pointer;
+  font-size:18px;
+  box-shadow:0 4px 20px rgba(255,255,0,0.4);
+  transition:transform 0.2s;
+}
+.overlay button:hover{transform:scale(1.08);}
+#winScreen{color:#ffeb3b;}
+#loseScreen{color:#ff4d4d;}
+</style>
+</head>
+<body>
+<div id="ui">
+  <div id="score">Score: 0</div>
+  <div id="lives">Lives: 3</div>
+  <div id="status"></div>
+  <div id="controls">Arrow / WASD or Swipe</div>
+</div>
+
+<canvas id="game"></canvas>
+<div id="hint">Press R to restart after game over / win</div>
+
+<!-- Winning screen -->
+<div id="winScreen" class="overlay">
+  <div>🎉 You Win! 🎉</div>
+  <button onclick="resetGame()">Restart</button>
+</div>
+
+<!-- Game over screen -->
+<div id="loseScreen" class="overlay">
+  <div>💀 Game Over 💀</div>
+  <button onclick="resetGame()">Restart</button>
+</div>
+
+<script>
+// Map & Setup
+const MAP_DATA = [
+"###################",
+"#........#........#",
+"#.###.###.#.###.###",
+"#G###.###.#.###.###",
+"#..................",
+"#.###.#.#####.#.###",
+"#.....#...#...#....",
+"#####.### # ###.###",
+"    #.#       #.#  ",
+"#####.# ## ## #.###",
+"#.........P........",
+"###.#.#### ####.#.##",
+"#...#...#   #...#..#",
+"#.#####.#   #.#####",
+"#.....#.#   #.#....",
+"###.###.#   #.#.###",
+"#........#   #.....#",
+"#.###.###   ###.###",
+"#G........T.......G",
+"###################"
+];
+
+const ROWS = MAP_DATA.length;
+const COLS = MAP_DATA[0].length;
+const TILE = 32;
+const canvas = document.getElementById('game');
+canvas.width = COLS*TILE;
+canvas.height = ROWS*TILE;
+const ctx = canvas.getContext('2d');
+
+let score=0, lives=3;
+let scoreEl=document.getElementById('score'), livesEl=document.getElementById('lives');
+let statusEl=document.getElementById('status');
+let winScreen=document.getElementById('winScreen');
+let loseScreen=document.getElementById('loseScreen');
+
+let gameOver=false, gameWin=false, pelletsTotal=0, pelletsEaten=0;
+let map=[], pac={x:0,y:0,dir:{x:1,y:0},nextDir:{x:1,y:0}}, ghosts=[];
+
+// INIT
+function initMap(){
+  map=[]; pelletsTotal=0; pelletsEaten=0; ghosts=[];
+  for(let r=0;r<ROWS;r++){
+    let row=[];
+    for(let c=0;c<COLS;c++){
+      let ch=MAP_DATA[r][c];
+      if(ch==='#') row.push('wall');
+      else if(ch==='.'){row.push('pellet'); pelletsTotal++;}
+      else if(ch==='P'){row.push('empty'); pac.x=c; pac.y=r;}
+      else if(ch==='G'){row.push('empty'); ghosts.push({x:c,y:r,dir:randDir(),color:pickGhostColor(ghosts.length),tick:0});}
+      else if(ch==='T'){row.push('tunnel');}
+      else row.push('empty');
+    }
+    map.push(row);
+  }
+}
+
+function pickGhostColor(i){return['#ff4d4d','#4dd0ff','#ff77b3','#a6ff4d'][i%4];}
+function randDir(){return[{x:1,y:0},{x:-1,y:0},{x:0,y:1},{x:0,y:-1}][Math.floor(Math.random()*4)];}
+function canMove(x,y){return !(x<0||x>=COLS||y<0||y>=ROWS) && map[y][x]!=='wall';}
+
+// Movement
+function attemptTurn(e){
+  const nx=e.x+e.nextDir.x, ny=e.y+e.nextDir.y;
+  if(canMove(nx,ny)) e.dir={...e.nextDir};
+}
+
+function updatePac(){
+  attemptTurn(pac);
+  const nx=pac.x+pac.dir.x, ny=pac.y+pac.dir.y;
+  if(canMove(nx,ny)) pac.x=nx, pac.y=ny;
+  if(map[pac.y][pac.x]==='pellet'){map[pac.y][pac.x]='empty'; score+=10; pelletsEaten++; scoreEl.textContent='Score: '+score; if(pelletsEaten>=pelletsTotal) winGame();}
+}
+
+function updateGhosts(){
+  ghosts.forEach(g=>{
+    g.tick++;
+    if(g.tick%6===0){
+      let dirs=[{x:1,y:0},{x:-1,y:0},{x:0,y:1},{x:0,y:-1}].filter(d=>canMove(g.x+d.x,g.y+d.y));
+      const rev={x:-g.dir.x,y:-g.dir.y};
+      dirs=dirs.filter(o=>!(o.x===rev.x && o.y===rev.y)||dirs.length===1);
+      if(dirs.length===0) dirs=[rev];
+      dirs.sort((a,b)=>Math.hypot(g.x+a.x-pac.x,g.y+a.y-pac.y)-Math.hypot(g.x+b.x-pac.x,g.y+b.y-pac.y)+Math.random()*0.8);
+      g.dir=dirs[0];
+    }
+    const nx=g.x+g.dir.x, ny=g.y+g.dir.y;
+    if(canMove(nx,ny)) g.x=nx, g.y=ny;
+    if(g.x===pac.x && g.y===pac.y) hitByGhost();
+  });
+}
+
+function hitByGhost(){lives--; livesEl.textContent='Lives: '+lives; if(lives<=0) loseGame(); else respawnEntities();}
+function respawnEntities(){
+  for(let r=0;r<ROWS;r++) for(let c=0;c<COLS;c++) if(MAP_DATA[r][c]==='P'){pac.x=c; pac.y=r; pac.dir={x:1,y:0}; pac.nextDir={x:1,y:0};}
+  let gi=0; ghosts=[]; for(let r=0;r<ROWS;r++) for(let c=0;c<COLS;c++) if(MAP_DATA[r][c]==='G'){ghosts.push({x:c,y:r,dir:randDir(),color:pickGhostColor(gi),tick:0}); gi++;}
+}
+
+function loseGame(){gameOver=true; loseScreen.classList.add('visible'); statusEl.textContent='Game Over';}
+function winGame(){gameWin=true; winScreen.classList.add('visible'); statusEl.textContent='You Win!';}
+
+// DRAW
+function draw(){
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  for(let r=0;r<ROWS;r++) for(let c=0;c<COLS;c++){
+    const tile=map[r][c], x=c*TILE, y=r*TILE;
+    if(tile==='wall'){ctx.fillStyle=getComputedStyle(document.documentElement).getPropertyValue('--wall'); ctx.fillRect(x,y,TILE,TILE);}
+    else {ctx.fillStyle='#000'; ctx.fillRect(x,y,TILE,TILE);}
+    if(tile==='pellet'){ctx.beginPath(); ctx.fillStyle=getComputedStyle(document.documentElement).getPropertyValue('--pellet'); ctx.arc(x+TILE/2,y+TILE/2,Math.max(2,TILE*0.08),0,Math.PI*2); ctx.fill();}
+  }
+  ctx.beginPath(); ctx.fillStyle=getComputedStyle(document.documentElement).getPropertyValue('--pac');
+  ctx.arc(pac.x*TILE+TILE/2,pac.y*TILE+TILE/2,TILE*0.38,0,Math.PI*2); ctx.fill();
+  ghosts.forEach(g=>{ctx.beginPath(); ctx.fillStyle=g.color; ctx.arc(g.x*TILE+TILE/2,g.y*TILE+TILE/2,TILE*0.38,0,Math.PI*2); ctx.fill();});
+}
+
+// GAME LOOP
+let last=performance.now(),TICK=150;
+function loop(now){
+  if(gameOver||gameWin){draw(); return;}
+  if(now-last>TICK){last=now; updatePac(); updateGhosts();}
+  draw();
+  requestAnimationFrame(loop);
+}
+
+// Controls
+window.addEventListener('keydown',e=>{
+  const k=e.key.toLowerCase();
+  if(k==='arrowleft'||k==='a') pac.nextDir={x:-1,y:0};
+  if(k==='arrowright'||k==='d') pac.nextDir={x:1,y:0};
+  if(k==='arrowup'||k==='w') pac.nextDir={x:0,y:-1};
+  if(k==='arrowdown'||k==='s') pac.nextDir={x:0,y:1};
+  if(k==='r') resetGame();
+});
+
+// Mobile swipe
+let startX=0,startY=0;
+canvas.addEventListener('touchstart',e=>{ const t=e.touches[0]; startX=t.clientX; startY=t.clientY; });
+canvas.addEventListener('touchend',e=>{ const t=e.changedTouches[0]; const dx=t.clientX-startX, dy=t.clientY-startY;
+  if(Math.abs(dx)>Math.abs(dy)){ if(dx>30) pac.nextDir={x:1,y:0}; else if(dx<-30) pac.nextDir={x:-1,y:0}; }
+  else{ if(dy>30) pac.nextDir={x:0,y:1}; else if(dy<-30) pac.nextDir={x:0,y:-1}; }
+});
+
+function resetGame(){
+  score=0; lives=3; gameOver=false; gameWin=false; scoreEl.textContent='Score: '+score; livesEl.textContent='Lives: '+lives;
+  winScreen.classList.remove('visible'); loseScreen.classList.remove('visible');
+  initMap(); respawnEntities(); requestAnimationFrame(loop);
+}
+
+initMap(); respawnEntities(); requestAnimationFrame(loop);
+</script>
+</body>
+</html>
